@@ -1,10 +1,12 @@
 import { Elysia } from "elysia";
 import { auth } from "./modules/auth";
 import { app as apiKeyApp } from "./modules/apiKeys";
+import { app as models } from "./modules/models";
 
 const app = new Elysia()
   .use(auth)
   .use(apiKeyApp)
+  .use(models)
   .listen(3000);
 
 console.log(
