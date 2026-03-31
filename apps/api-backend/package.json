@@ -1,12 +1,19 @@
 {
   "name": "api-backend",
-  "module": "index.ts",
-  "type": "module",
-  "private": true,
-  "devDependencies": {
-    "@types/bun": "latest"
+  "version": "1.0.50",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "bun run --watch src/index.ts"
   },
-  "peerDependencies": {
-    "typescript": "^5"
-  }
+  "dependencies": {
+    "@elysiajs/bearer": "^1.4.3",
+    "@google/genai": "^1.47.0",
+    "@huggingface/inference": "^4.13.15",
+    "elysia": "latest",
+    "groq-sdk": "^1.1.2"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  },
+  "module": "src/index.js"
 }
