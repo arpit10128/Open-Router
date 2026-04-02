@@ -7,6 +7,9 @@ import { Huggingface } from "./llms/HuggingFace";
 import { GroqApi } from "./llms/Groq";
 import { LlmResponse } from "./llms/Base";
 import { calculateCredits } from "./Credits";
+import { reservedCredits } from "./billing/creditReservation";
+import { estimatedCredits } from "./billing/creditEstimatedCost";
+import { settleCredits } from "./billing/creditSettlement";
 
 const app = new Elysia()
   .use(bearer())
@@ -16,7 +19,6 @@ const app = new Elysia()
       const model = body.model;
       const [_CompanyName] = model.split("/");
 
-      console.log(apiKey);
       const apiKeyDb = await prisma.apiKey.findUnique({
         where: {
           apiKey,
@@ -34,12 +36,31 @@ const app = new Elysia()
         });
       }
 
-      if (apiKeyDb.user.credits <= 0) {
+      const prompt = body.messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+      }));
+
+      const estimatedCreditsUsed = await estimatedCredits(
+        prompt,
+        model,
+      );
+
+      if (
+        apiKeyDb.user.credits <= 0 ||
+        apiKeyDb.user.credits < estimatedCreditsUsed
+      ) {
         return status(403, {
           message:
             "Invalid request. You don't have enough credits.",
         });
       }
+
+      const reservedCredit = await reservedCredits(
+        apiKeyDb.user.id,
+        prompt,
+        model,
+      );
 
       const modelDb = await prisma.model.findFirst({
         where: {
@@ -101,6 +122,12 @@ const app = new Elysia()
       }
 
       if (!response) {
+        // if Api calls fails it will refund the reserved credits.
+        await settleCredits(
+          apiKeyDb.user.id,
+          reservedCredit,
+          0,
+        );
         return status(403, {
           message: "No provider found for this model.",
         });
@@ -112,29 +139,23 @@ const app = new Elysia()
         provider.provider.id,
       );
 
-      await prisma.$transaction([
-        prisma.user.update({
-          where: {
-            id: apiKeyDb.user.id,
+      await settleCredits(
+        apiKeyDb.user.id,
+        reservedCredit,
+        creditsUsed,
+      );
+
+      await prisma.apiKey.update({
+        where: {
+          apiKey,
+        },
+        data: {
+          creditsConsumed: {
+            increment: creditsUsed,
           },
-          data: {
-            credits: {
-              decrement: creditsUsed,
-            },
-          },
-        }),
-        prisma.apiKey.update({
-          where: {
-            apiKey,
-          },
-          data: {
-            creditsConsumed: {
-              increment: creditsUsed,
-            },
-            lastUsed: new Date(),
-          },
-        }),
-      ]);
+          lastUsed: new Date(),
+        },
+      });
 
       return response;
     },
