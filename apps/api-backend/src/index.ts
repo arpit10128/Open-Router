@@ -1,47 +1,142 @@
 import { Elysia } from "elysia";
 import bearer from "@elysiajs/bearer";
+import { prisma } from "db";
 import { Conversations } from "./types";
 import { Gemini } from "./llms/Gemini";
 import { Huggingface } from "./llms/HuggingFace";
 import { GroqApi } from "./llms/Groq";
+import { LlmResponse } from "./llms/Base";
+import { calculateCredits } from "./Credits";
 
 const app = new Elysia()
   .use(bearer())
   .post(
     "/api/v1/chat/completions",
-    async ({ bearer, body }) => {
+    async ({ bearer: apiKey, body, status }) => {
       const model = body.model;
-      const [CompanyName] = model.split("/");
+      const [_CompanyName] = model.split("/");
 
-      // console.log("Incoming model:", model);
-      // console.log("Company:", CompanyName);
+      console.log(apiKey);
+      const apiKeyDb = await prisma.apiKey.findUnique({
+        where: {
+          apiKey,
+          disabled: false,
+          deleted: false,
+        },
+        select: {
+          user: true,
+        },
+      });
 
-      if (CompanyName == "google") {
+      if (!apiKeyDb) {
+        return status(403, {
+          message: "Invalid api key",
+        });
+      }
+
+      if (apiKeyDb.user.credits <= 0) {
+        return status(403, {
+          message:
+            "Invalid request. You don't have enough credits.",
+        });
+      }
+
+      const modelDb = await prisma.model.findFirst({
+        where: {
+          slug: model,
+        },
+      });
+
+      if (!modelDb) {
+        return status(403, {
+          message: "We don't support this model yet.",
+        });
+      }
+
+      const providers =
+        await prisma.modelProviderMapping.findMany({
+          where: {
+            modelId: modelDb.id,
+          },
+          include: {
+            provider: true,
+          },
+        });
+
+      if (providers.length === 0) {
+        return status(403, {
+          message: "No providers available for this model.",
+        });
+      }
+
+      const provider =
+        providers[
+          Math.floor(Math.random() * providers.length)
+        ];
+
+      let response: LlmResponse | null = null;
+
+      if (provider.provider.name == "Google Ai Studio") {
         const providerModelName = model.split("/")[1];
-        const response = await Gemini.chat(
+        response = await Gemini.chat(
           providerModelName,
           body.messages,
         );
-        return response;
       }
 
-      if (CompanyName == "openai") {
+      if (provider.provider.name == "Groq") {
         const providerModelName = model;
-        const response = await GroqApi.chat(
+        response = await GroqApi.chat(
           providerModelName,
           body.messages,
         );
-        return response;
       }
 
-      if (CompanyName == "meta-llama") {
+      if (provider.provider.name == "Hugging Face") {
         const providerModelName = model;
-        const response = await Huggingface.chat(
+        response = await Huggingface.chat(
           providerModelName,
           body.messages,
         );
-        return response;
       }
+
+      if (!response) {
+        return status(403, {
+          message: "No provider found for this model.",
+        });
+      }
+
+      const creditsUsed = await calculateCredits(
+        response,
+        model,
+        provider.provider.id,
+      );
+
+      await prisma.$transaction([
+        prisma.user.update({
+          where: {
+            id: apiKeyDb.user.id,
+          },
+          data: {
+            credits: {
+              decrement: creditsUsed,
+            },
+          },
+        }),
+        prisma.apiKey.update({
+          where: {
+            apiKey,
+          },
+          data: {
+            creditsConsumed: {
+              increment: creditsUsed,
+            },
+            lastUsed: new Date(),
+          },
+        }),
+      ]);
+
+      return response;
     },
     {
       body: Conversations,
